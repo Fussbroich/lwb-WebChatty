@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <title>Chat Messages</title>
+</head>
+
+<body>
+    {{range $m := $.Messages}}
+    <div>{{$m.MsgID}} {{$m.Text}}</div>
+    {{end}}
+    <script>
+        setTimeout(function () { window.location.reload(1); }, 3000);
+    </script>
+</body>
+
+</html>

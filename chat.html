@@ -8,14 +8,12 @@
 </head>
 
 <body>
+    <iframe src="chat_messages_frame.html" name="chatframe" id="chatframe" width="100%" height="300px"></iframe>
     <form action="/chat/{{$.Key}}" method="post">
         <input type="hidden" name="key" value="{{$.Key}}">
         <input type="text" name="message" placeholder="Nachricht...">
         <button type="submit">Senden</button>
     </form>
-    {{range $m := $.Messages}}
-    <div>{{$m.MsgID}} {{$m.Text}}</div>
-    {{end}}
 </body>
 
 </html>

@@ -37,9 +37,13 @@ func NewWebApp(db *sql.DB, server_addr string) *app {
 	}
 
 	// Routen und Handler registrieren
-	app.mux.Handle("/", http.RedirectHandler("/chat/default", http.StatusMovedPermanently))
+	app.mux.Handle("GET /{$}", http.RedirectHandler("/chat/default", http.StatusMovedPermanently))
 	app.mux.HandleFunc("GET /chat/{key}", app.handleChatGET)
 	app.mux.HandleFunc("POST /chat/{key}", app.handleChatPOST)
+	// Dateizugriff für Icons und Styles
+	app.mux.Handle("GET /favicon.ico", http.FileServer(http.Dir("static")))
+	app.mux.Handle("GET /", http.FileServer(http.Dir("static")))
+
 	return app
 }
 
