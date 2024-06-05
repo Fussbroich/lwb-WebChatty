@@ -5,87 +5,159 @@ import (
 	"fmt"
 	"html/template"
 	"net/http"
+	"time"
 
 	_ "github.com/lib/pq"
 )
 
-type Server struct {
-	db        *sql.DB
-	templates *template.Template
+// Einige Laufzeit-Objekte für die Web-app
+type app struct {
+	db        *sql.DB            // Datenbankhandle
+	address   string             // IP des Web-Servers
+	templates *template.Template //HTML-Template
+	mux       *http.ServeMux
 }
 
 func main() {
-	db, err := sql.Open("postgres", "postgres://username:password@localhost/dbname?sslmode=disable")
+	db, err := sql.Open("postgres", "user=lewein password=niewel dbname=lwb sslmode=disable")
 	if err != nil {
 		panic(err)
 	}
 	defer db.Close()
+	app := NewWebApp(db, "192.168.188.24:8080")
+	app.Starte()
+}
 
-	server := &Server{
+func NewWebApp(db *sql.DB, server_addr string) *app {
+	app := &app{
 		db:        db,
+		address:   server_addr,
+		mux:       http.NewServeMux(),
 		templates: template.Must(template.ParseFiles("chat.html")),
 	}
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/", server.handleHome)
-
-	// Setup route for GET and POST using method-specific patterns
-	mux.HandleFunc("GET /chat/{key}", server.handleChatGET)
-	mux.HandleFunc("POST /chat/{key}", server.handleChatPOST)
-
-	http.ListenAndServe(":8080", mux)
+	// Routen und Handler registrieren
+	app.mux.Handle("/", http.RedirectHandler("/chat/default", http.StatusMovedPermanently))
+	app.mux.HandleFunc("GET /chat/{key}", app.handleChatGET)
+	app.mux.HandleFunc("POST /chat/{key}", app.handleChatPOST)
+	return app
 }
 
-func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
-	s.templates.ExecuteTemplate(w, "chat.html", nil)
+func (s *app) Starte() {
+	fmt.Println("Starte lwb-WebChatty unter http://localhost:8080")
+	http.ListenAndServe(s.address, s.mux)
 }
 
-func (s *Server) handleChatGET(w http.ResponseWriter, r *http.Request) {
-	key := r.URL.Query().Get("key") // Adjust as necessary to extract 'key' from the URL
-	chatroomID, err := s.ensureChatroom(key)
-	if err != nil {
-		http.Error(w, "Server error", http.StatusInternalServerError)
+// Die Modell-Objekte und die Handler
+
+type Message struct {
+	MsgID  uint64
+	Text   string
+	TStamp time.Time
+}
+
+type AppParams struct {
+	Key      string     // Chatraum-Schlüssel
+	Messages []*Message // anzuzeigende Nachrichten
+}
+
+func (s *app) handleChatGET(w http.ResponseWriter, r *http.Request) {
+	var key string
+	var err error
+	var chatroomID uint64
+	if key = r.PathValue("key"); key == "" {
+		http.Error(w, "Schluessel fehlt", http.StatusBadRequest)
+		return
+	}
+	if chatroomID, err = s.ensureChatroom(key); err != nil {
+		http.Error(w, fmt.Sprint(err), http.StatusInternalServerError)
 		return
 	}
 
 	// Fetch and display messages
-	messages, err := s.fetchMessages(chatroomID)
-	if err != nil {
-		http.Error(w, "Failed to fetch messages", http.StatusInternalServerError)
+	var messages []*Message
+	if messages, err = s.fetchMessages(chatroomID); err != nil {
+		http.Error(w, fmt.Sprint(err), http.StatusInternalServerError)
 		return
 	}
-	s.templates.ExecuteTemplate(w, "chat.html", messages)
+	if err = s.templates.ExecuteTemplate(w, "chat.html",
+		AppParams{
+			Key:      key,
+			Messages: messages}); err != nil {
+		http.Error(w, fmt.Sprint(err), http.StatusInternalServerError)
+		return
+	}
 }
 
-func (s *Server) handleChatPOST(w http.ResponseWriter, r *http.Request) {
-	key := r.URL.Query().Get("key") // Adjust as necessary to extract 'key' from the URL
-	chatroomID, err := s.ensureChatroom(key)
-	if err != nil {
+func (s *app) handleChatPOST(w http.ResponseWriter, r *http.Request) {
+	var key string
+	var err error
+	var chatroomID uint64
+	key = r.PathValue("key") // extract 'key' from the URL
+	if chatroomID, err = s.ensureChatroom(key); err != nil {
 		http.Error(w, "Server error", http.StatusInternalServerError)
 		return
 	}
 
 	// Process posted message
-	if err := s.processPostedMessage(chatroomID, r); err != nil {
-		http.Error(w, "Failed to post message", http.StatusInternalServerError)
-		return
+	r.ParseForm()
+	if text := r.FormValue("message"); text != "" {
+		if err = s.insertMessage(chatroomID, text); err != nil {
+			http.Error(w, "Failed to insert message", http.StatusInternalServerError)
+			return
+		}
 	}
 
 	// Redirect or re-render the page
 	http.Redirect(w, r, fmt.Sprintf("/chat/%s", key), http.StatusFound)
 }
 
-func (s *Server) ensureChatroom(key string) (int, error) {
-	// Implementation assumes the chatroom is ensured in the DB and returns its ID
-	return 0, nil
+// #### Datenbankzugriffe für die App
+
+func (s *app) ensureChatroom(key string) (uint64, error) {
+	var id uint64
+	var err error
+	if err = s.db.QueryRow(`
+INSERT INTO chatrooms (key)
+VALUES ($1)
+ON CONFLICT (key)
+DO UPDATE SET key=EXCLUDED.key RETURNING id`, key).Scan(&id); err != nil {
+		return 0, err
+	}
+	return id, nil
 }
 
-func (s *Server) fetchMessages(chatroomID int) ([]string, error) {
-	// Fetch messages from the database
-	return nil, nil
+func (s *app) fetchMessages(chatroomID uint64) ([]*Message, error) {
+	var messages []*Message
+	var rows *sql.Rows
+	var err error
+	if rows, err = s.db.Query(`
+SELECT id, message, timestamp
+FROM messages
+WHERE chatroom_id = $1
+ORDER BY timestamp ASC`, chatroomID); err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	messages = []*Message{}
+	for rows.Next() {
+		var msg = Message{}
+		if err := rows.Scan(&msg.MsgID, &msg.Text, &msg.TStamp); err != nil {
+			return nil, err
+		}
+		messages = append(messages, &msg)
+	}
+	return messages, nil
 }
 
-func (s *Server) processPostedMessage(chatroomID int, r *http.Request) error {
-	// Process the incoming POST request to add a message to the chatroom
+func (s *app) insertMessage(chatroomID uint64, text string) error {
+	var err error
+	if _, err = s.db.Exec(`
+INSERT
+INTO messages (chatroom_id, message)
+VALUES ($1, $2)`, chatroomID, text); err != nil {
+		return err
+	}
 	return nil
 }

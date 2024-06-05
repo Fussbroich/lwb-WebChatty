@@ -3,20 +3,19 @@
 
 <head>
     <meta charset="UTF-8">
-    <title>Chat Room</title>
+    <meta http-equiv="refresh" content="10">
+    <title>Chatraum {{$.Key}}</title>
 </head>
 
 <body>
-    <form action="/chat" method="post">
-        <input type="hidden" name="key" value="{{ .Key }}">
-        <input type="text" name="message" placeholder="Type a message...">
-        <button type="submit">Send</button>
+    <form action="/chat/{{$.Key}}" method="post">
+        <input type="hidden" name="key" value="{{$.Key}}">
+        <input type="text" name="message" placeholder="Nachricht...">
+        <button type="submit">Senden</button>
     </form>
-    <ul>
-        {{ range .Messages }}
-        <li>{{ . }}</li>
-        {{ end }}
-    </ul>
+    {{range $m := $.Messages}}
+    <div>{{$m.MsgID}} {{$m.Text}}</div>
+    {{end}}
 </body>
 
 </html>
