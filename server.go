@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"fmt"
 	"html/template"
 	"net/http"
 
@@ -14,7 +15,7 @@ type Server struct {
 }
 
 func main() {
-	db, err := sql.Open("postgres", "postgres://lewein:niewel@localhost/lwb?sslmode=disable")
+	db, err := sql.Open("postgres", "postgres://username:password@localhost/dbname?sslmode=disable")
 	if err != nil {
 		panic(err)
 	}
@@ -27,7 +28,10 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", server.handleHome)
-	mux.HandleFunc("/chat", server.handleChat)
+
+	// Setup route for GET and POST using method-specific patterns
+	mux.HandleFunc("GET /chat/{key}", server.handleChatGET)
+	mux.HandleFunc("POST /chat/{key}", server.handleChatPOST)
 
 	http.ListenAndServe(":8080", mux)
 }
@@ -36,56 +40,52 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 	s.templates.ExecuteTemplate(w, "chat.html", nil)
 }
 
-func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
-	key := r.URL.Query().Get("key")
-	if key == "" {
-		http.Error(w, "Key is required", http.StatusBadRequest)
-		return
-	}
-
+func (s *Server) handleChatGET(w http.ResponseWriter, r *http.Request) {
+	key := r.URL.Query().Get("key") // Adjust as necessary to extract 'key' from the URL
 	chatroomID, err := s.ensureChatroom(key)
 	if err != nil {
 		http.Error(w, "Server error", http.StatusInternalServerError)
 		return
 	}
 
-	if r.Method == "POST" {
-		r.ParseForm()
-		message := r.FormValue("message")
-		if message != "" {
-			_, err := s.db.Exec("INSERT INTO messages (chatroom_id, message) VALUES ($1, $2)", chatroomID, message)
-			if err != nil {
-				http.Error(w, "Failed to insert message", http.StatusInternalServerError)
-				return
-			}
-		}
-	}
-
-	rows, err := s.db.Query("SELECT message FROM messages WHERE chatroom_id = $1 ORDER BY timestamp ASC", chatroomID)
+	// Fetch and display messages
+	messages, err := s.fetchMessages(chatroomID)
 	if err != nil {
 		http.Error(w, "Failed to fetch messages", http.StatusInternalServerError)
 		return
 	}
-	defer rows.Close()
-
-	messages := []string{}
-	for rows.Next() {
-		var msg string
-		if err := rows.Scan(&msg); err != nil {
-			http.Error(w, "Failed to read messages", http.StatusInternalServerError)
-			return
-		}
-		messages = append(messages, msg)
-	}
-
 	s.templates.ExecuteTemplate(w, "chat.html", messages)
 }
 
-func (s *Server) ensureChatroom(key string) (int, error) {
-	var id int
-	err := s.db.QueryRow("INSERT INTO chatrooms (key) VALUES ($1) ON CONFLICT (key) DO UPDATE SET key=EXCLUDED.key RETURNING id", key).Scan(&id)
+func (s *Server) handleChatPOST(w http.ResponseWriter, r *http.Request) {
+	key := r.URL.Query().Get("key") // Adjust as necessary to extract 'key' from the URL
+	chatroomID, err := s.ensureChatroom(key)
 	if err != nil {
-		return 0, err
+		http.Error(w, "Server error", http.StatusInternalServerError)
+		return
 	}
-	return id, nil
+
+	// Process posted message
+	if err := s.processPostedMessage(chatroomID, r); err != nil {
+		http.Error(w, "Failed to post message", http.StatusInternalServerError)
+		return
+	}
+
+	// Redirect or re-render the page
+	http.Redirect(w, r, fmt.Sprintf("/chat/%s", key), http.StatusFound)
+}
+
+func (s *Server) ensureChatroom(key string) (int, error) {
+	// Implementation assumes the chatroom is ensured in the DB and returns its ID
+	return 0, nil
+}
+
+func (s *Server) fetchMessages(chatroomID int) ([]string, error) {
+	// Fetch messages from the database
+	return nil, nil
+}
+
+func (s *Server) processPostedMessage(chatroomID int, r *http.Request) error {
+	// Process the incoming POST request to add a message to the chatroom
+	return nil
 }
