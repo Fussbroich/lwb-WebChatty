@@ -1,108 +1,91 @@
-// Thema: Wie baue ich einen Webserver in go?
-// Zweck: Mögliche Anwendung für dynamische Views auf eine Datenbank über einen Browser.
-//	Go ab 1.22 (!), aktueller Browser (es geht auch mit go 1.18, ist aber etwas mehr Arbeit)
-//
-//	Datum: 02.06.2024
-
 package main
 
 import (
-	"fmt"
-	"log"
-	"net"
+	"database/sql"
+	"html/template"
 	"net/http"
-	"os"
+
+	_ "github.com/lib/pq"
 )
 
-// Hier würde man für jede Aufgabe einen eigenen Handler schreiben
-// Ein "Handler" erfüllt das Interface http.Handler.
-
-// Ein Beispiel-Handler für alles
-func echoHandler(tag string, logger *log.Logger) http.Handler {
-
-	// Erzeuge den Handler als anonyme Funktion und gib diese zurück. Die ist
-	// hier als closure implementiert, um verschiedene zusätzliche Objekte, wie
-	// Datenbankverbindungen, Logger und dergleichen mit einzubinden.
-	var handler = func(w http.ResponseWriter, r *http.Request) {
-
-		// In diesem Handler werden keine Datenbank-Inhalte gezeigt, sondern eine einfache Nachricht.
-		msg := fmt.Sprintf("Ich handle %s.\n"+
-			"Du hast den Server mit der %s Methode unter %s erreicht.",
-			tag, r.Method, r.URL.Path)
-
-		logger.Println(msg) // -> Nachricht zur Info loggen
-
-		// Die Response (z.B. eine Web-Page) für den Browser bzw. Client erzeugen.
-		// Tipp: Benutze html/template zur dynamischen Erzeugung von HTML-Seiten.
-		htmlContent := `
-<html>
-	<head>
-    	<title>WebEcho</title>
-	</head>
-	<body>
-    	<div>` + msg + `</div>
-	</body>
-</html>`
-
-		//Im Header sagt man dem Browser, was man da anliefert ...
-		w.Header().Set("Content-Type", "text/html")
-		// ...und schreibt die Response -> Fehler sind zu behandeln.
-		if _, err := w.Write([]byte(htmlContent)); err != nil {
-			http.Error(w, fmt.Sprintf("interner Serverfehler %s", err), http.StatusInternalServerError)
-			return
-		}
-	}
-
-	// Einmal das geforderte Interface drüberziehen und die Handler-Funktion zurückgeben.
-	return http.HandlerFunc(handler)
+type Server struct {
+	db        *sql.DB
+	templates *template.Template
 }
 
 func main() {
-	logger := log.New(os.Stdout, "**", 0)
+	db, err := sql.Open("postgres", "postgres://lewein:niewel@localhost/lwb?sslmode=disable")
+	if err != nil {
+		panic(err)
+	}
+	defer db.Close()
 
-	// ein neuer Multiplexer für das Routing
-	var mux *http.ServeMux = http.NewServeMux()
-
-	// Registriere einige Methoden und Routen, die Deine WebApp anbieten soll.
-	// Hier wird jeder Methode/Route ein Handler zugeordnet.
-	// Der jeweilige Handler enthält die "Modelle und Logik" Deiner WebApp.
-	// Der Mux ruft den passenden Handler auf, wenn jemand die HTTP-Route anfragt.
-
-	// HINWEIS: das funktioniert so erst mit go 1.22 - sonst kurz umbauen:
-	// Vor go 1.22 muss man die HTTP-Methode händisch aus dem Request extrahieren.
-	// (fehleranfällig und unschön)
-	// Der neue ServeMux seit 1.22 nimmt einem diese Arbeiten ab ...
-	// siehe https://eli.thegreenplace.net/2023/better-http-server-routing-in-go-122
-
-	// Wir bedienen hier die folgende sehr einfache Benutzerschnittstelle.
-	// Es wird derzeit in jedem Fall lediglich eine Webpage ausgeliefert,
-	// die die Methode und den Pfad noch einmal zurückgibt (Echo).
-	// Andere Handler würden hier echte Aufgaben erfüllen ...
-	// GET   /
-	// GET   /meinPfad
-	// POST  /meinPfad
-	// ...   /... alle anderen
-	mux.Handle("GET /meinPfad", echoHandler("Get an /meinPfad", logger))
-	mux.Handle("GET /{$}", echoHandler("Get an der Wurzel", logger))
-	mux.Handle("POST /meinPfad", echoHandler("Posts an /meinPfad", logger))
-	// Ein öffentliches Verzeichnis für Bilder und Downloads benutzen -
-	// beispielsweise für das Tab-Icon.
-	mux.Handle("GET /favicon.ico", http.FileServer(http.Dir("static")))
-	// Hier sollte man eigentlich nie rauskommen.
-	mux.Handle("/", echoHandler("Fallbacks", logger))
-
-	// Baue einen Web-Server zusammen und starte ihn
-	server := &http.Server{
-		// Hier würde man die eigene IP-Adresse angeben und müsste
-		// die eigene Firewall für ankommendes TCP freigeben,
-		// damit der Server von anderen im Netz erreichbar wird.
-		Addr:    net.JoinHostPort("localhost", "8081"),
-		Handler: http.Handler(mux),
+	server := &Server{
+		db:        db,
+		templates: template.Must(template.ParseFiles("chat.html")),
 	}
 
-	logger.Printf("Starte Web-Server unter http://%s\n", server.Addr)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", server.handleHome)
+	mux.HandleFunc("/chat", server.handleChat)
 
-	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		logger.Printf("Server-Fehler: %s\n", err)
+	http.ListenAndServe(":8080", mux)
+}
+
+func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
+	s.templates.ExecuteTemplate(w, "chat.html", nil)
+}
+
+func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
+	key := r.URL.Query().Get("key")
+	if key == "" {
+		http.Error(w, "Key is required", http.StatusBadRequest)
+		return
 	}
+
+	chatroomID, err := s.ensureChatroom(key)
+	if err != nil {
+		http.Error(w, "Server error", http.StatusInternalServerError)
+		return
+	}
+
+	if r.Method == "POST" {
+		r.ParseForm()
+		message := r.FormValue("message")
+		if message != "" {
+			_, err := s.db.Exec("INSERT INTO messages (chatroom_id, message) VALUES ($1, $2)", chatroomID, message)
+			if err != nil {
+				http.Error(w, "Failed to insert message", http.StatusInternalServerError)
+				return
+			}
+		}
+	}
+
+	rows, err := s.db.Query("SELECT message FROM messages WHERE chatroom_id = $1 ORDER BY timestamp ASC", chatroomID)
+	if err != nil {
+		http.Error(w, "Failed to fetch messages", http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	messages := []string{}
+	for rows.Next() {
+		var msg string
+		if err := rows.Scan(&msg); err != nil {
+			http.Error(w, "Failed to read messages", http.StatusInternalServerError)
+			return
+		}
+		messages = append(messages, msg)
+	}
+
+	s.templates.ExecuteTemplate(w, "chat.html", messages)
+}
+
+func (s *Server) ensureChatroom(key string) (int, error) {
+	var id int
+	err := s.db.QueryRow("INSERT INTO chatrooms (key) VALUES ($1) ON CONFLICT (key) DO UPDATE SET key=EXCLUDED.key RETURNING id", key).Scan(&id)
+	if err != nil {
+		return 0, err
+	}
+	return id, nil
 }

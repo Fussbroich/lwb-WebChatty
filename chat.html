@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <title>Chat Room</title>
+</head>
+
+<body>
+    <form action="/chat" method="post">
+        <input type="hidden" name="key" value="{{ .Key }}">
+        <input type="text" name="message" placeholder="Type a message...">
+        <button type="submit">Send</button>
+    </form>
+    <ul>
+        {{ range .Messages }}
+        <li>{{ . }}</li>
+        {{ end }}
+    </ul>
+</body>
+
+</html>

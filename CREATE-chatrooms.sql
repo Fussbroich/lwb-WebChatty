@@ -1,0 +1,12 @@
+CREATE TABLE IF NOT EXISTS chatrooms (
+    id SERIAL PRIMARY KEY,
+    key TEXT UNIQUE NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS messages (
+    id SERIAL PRIMARY KEY,
+    chatroom_id INTEGER NOT NULL,
+    message TEXT NOT NULL,
+    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (chatroom_id) REFERENCES chatrooms(id) ON DELETE CASCADE
+);
